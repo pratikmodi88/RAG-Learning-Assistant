@@ -1,5 +1,7 @@
 🧠 RAG Learning Assistant
 
+⚡ Built as part of my hands-on learning journey to understand how RAG systems work in real-world scenarios.
+
 This project is a hands-on exploration of Retrieval-Augmented Generation (RAG) — built to understand how modern AI systems combine retrieval and generation to answer questions over custom data.
 
 🎯 Objective
