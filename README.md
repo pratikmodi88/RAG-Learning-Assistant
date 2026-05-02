@@ -46,7 +46,10 @@ Through this project, I explored:
   Ask questions over your own documents
   Real-time retrieval-based responses
   Modular and extendable architecture
-  Optional voice input support
+
+## 🚀 Demo Preview
+
+![Demo](assets/demo.png)
 
 ⚠️ Limitations
   Works best with well-structured documents
