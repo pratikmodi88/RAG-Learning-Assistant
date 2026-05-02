@@ -68,8 +68,11 @@ uploaded_files = st.file_uploader(
     accept_multiple_files=True
 )
 
-def create_chunks(text, chunk_size=400):
-    return [text[i:i+chunk_size] for i in range(0, len(text), chunk_size)]
+def create_chunks(text, filename, chunk_size=400):
+    return [
+        {"text": text[i:i+chunk_size], "source": filename}
+        for i in range(0, len(text), chunk_size)
+    ]
 
 banner = st.empty()
 
@@ -78,7 +81,7 @@ if uploaded_files and not st.session_state.files_processed:
 
     for file in uploaded_files:
         text = file.read().decode("utf-8")
-        all_chunks.extend(create_chunks(text))
+        all_chunks.extend(create_chunks(text, file.name))
 
     st.session_state.chunks = all_chunks
     st.session_state.files_processed = True
@@ -93,7 +96,7 @@ def retrieve(query, chunks):
     scored = []
 
     for chunk in chunks:
-        score = sum(1 for word in query.lower().split() if word in chunk.lower())
+        score = sum(1 for w in query.lower().split() if w in chunk["text"].lower())
         scored.append((score, chunk))
 
     scored.sort(reverse=True, key=lambda x: x[0])
@@ -102,7 +105,7 @@ def retrieve(query, chunks):
 # ------------------ PROMPT ------------------
 
 def build_prompt(question, chunks):
-    context = "\n\n".join(chunks)
+    context = "\n\n".join([c["text"] for c in chunks])
 
     return f"""
 You are Nova, an AI assistant.
@@ -132,7 +135,6 @@ def ask_gemini(prompt):
 
 for msg in st.session_state.messages:
 
-    # USER (RIGHT SIDE)
     if msg["role"] == "user":
         col1, col2 = st.columns([1, 2])
 
@@ -153,8 +155,10 @@ for msg in st.session_state.messages:
             </div>
             """, unsafe_allow_html=True)
 
-    # NOVA (FULL WIDTH)
     else:
+        answer = msg["content"]["answer"]
+        sources = msg["content"]["sources"]
+
         st.markdown(f"""
         <div style='
             background:#1e1e1e;
@@ -163,12 +167,28 @@ for msg in st.session_state.messages:
             border-radius:14px;
             margin:10px 0;
             width:100%;
-            line-height:1.6;
-            font-size:15px;
         '>
-        🤖 {msg['content']}
+        🤖 {answer}
         </div>
         """, unsafe_allow_html=True)
+
+        st.markdown("---")
+        st.markdown("### 📚 Sources")
+
+        for s in sources:
+            st.markdown(f"""
+            <div style='
+                background:#111;
+                padding:10px;
+                border-radius:10px;
+                margin-bottom:8px;
+                font-size:13px;
+                color:#ccc;
+            '>
+            📄 <b>{s['source']}</b><br>
+            {s['text'][:200]}...
+            </div>
+            """, unsafe_allow_html=True)
 
 # ------------------ INPUT BAR ------------------
 
@@ -207,7 +227,10 @@ if user_input:
 
         st.session_state.messages.append({
             "role": "assistant",
-            "content": answer
+            "content": {
+                "answer": answer,
+                "sources": relevant
+            }
         })
 
         st.rerun()
