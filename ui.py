@@ -16,8 +16,8 @@ def clean_llm_output(text):
 
 # ------------------ CONFIG ------------------
 
-st.set_page_config(page_title="Nova AI", layout="wide")
-st.title("🤖 Nova AI Assistant")
+st.set_page_config(page_title="RAG-Learning-Assistant", layout="wide")
+st.title("🤖 RAG-Learning-Assistant")
 
 # ------------------ ENV ------------------
 
@@ -180,7 +180,7 @@ def retrieve(q, chunks):
 def build_prompt(q, chunks):
     ctx = "\n\n".join([c["text"] for c in chunks])
     return f"""
-You are Nova.
+You are RAG-Learning-Assistant.
 
 - No HTML tags
 - Use markdown tables if needed
