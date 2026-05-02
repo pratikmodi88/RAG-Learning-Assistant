@@ -3,6 +3,8 @@ from pathlib import Path
 import streamlit as st
 from google import genai
 import time
+import math
+import pdfplumber
 
 # ------------------ CONFIG ------------------
 
@@ -17,7 +19,6 @@ st.markdown("""
     max-width: 1200px;
     margin: auto;
 }
-
 div[data-testid="stChatInput"] {
     border: 1px solid #ff4b4b;
     border-radius: 12px;
@@ -60,13 +61,25 @@ if "chunks" not in st.session_state:
 if "files_processed" not in st.session_state:
     st.session_state.files_processed = False
 
+if "last_query" not in st.session_state:
+    st.session_state.last_query = ""
+
 # ------------------ FILE UPLOAD ------------------
 
 uploaded_files = st.file_uploader(
-    "📂 Upload .txt files",
-    type=["txt"],
+    "📂 Upload .txt or .pdf files",
+    type=["txt", "pdf"],
     accept_multiple_files=True
 )
+
+def read_pdf(file):
+    text = ""
+    with pdfplumber.open(file) as pdf:
+        for page in pdf.pages:
+            page_text = page.extract_text()
+            if page_text:
+                text += page_text + "\n"
+    return text
 
 def create_chunks(text, filename, chunk_size=400):
     return [
@@ -74,32 +87,106 @@ def create_chunks(text, filename, chunk_size=400):
         for i in range(0, len(text), chunk_size)
     ]
 
-banner = st.empty()
+# ------------------ EMBEDDINGS ------------------
+
+def embed_texts(texts):
+    res = client.models.embed_content(
+        model="gemini-embedding-001",
+        contents=texts
+    )
+    return [e.values for e in res.embeddings]
+
+# ------------------ LOAD FILES WITH PROGRESS ------------------
+
+progress_bar = st.progress(0)
+status_text = st.empty()
 
 if uploaded_files and not st.session_state.files_processed:
     all_chunks = []
+    total_files = len(uploaded_files)
 
-    for file in uploaded_files:
-        text = file.read().decode("utf-8")
-        all_chunks.extend(create_chunks(text, file.name))
+    for idx, file in enumerate(uploaded_files):
+
+        percent = int(((idx + 1) / total_files) * 100)
+        progress_bar.progress(percent)
+        status_text.text(f"Processing {file.name} ({percent}%)")
+        time.sleep(0.2)
+
+        if file.name.endswith(".txt"):
+            text = file.read().decode("utf-8")
+
+        elif file.name.endswith(".pdf"):
+            text = read_pdf(file)
+
+        else:
+            continue
+
+        if not text.strip():
+            continue
+
+        chunks = create_chunks(text, file.name)
+        all_chunks.extend(chunks)
+
+    # -------- EMBEDDINGS --------
+
+    status_text.text("Generating embeddings...")
+    progress_bar.progress(90)
+
+    texts = [c["text"] for c in all_chunks]
+    embeddings = embed_texts(texts)
+
+    for i, c in enumerate(all_chunks):
+        c["embedding"] = embeddings[i]
 
     st.session_state.chunks = all_chunks
     st.session_state.files_processed = True
 
-    banner.success("✅ Files loaded into memory")
-    time.sleep(2)
-    banner.empty()
+    progress_bar.progress(100)
+    status_text.text("✅ Files ready!")
+
+    time.sleep(1)
+    progress_bar.empty()
+    status_text.empty()
+
+# ------------------ FILE FILTER DROPDOWN ------------------
+
+if st.session_state.chunks:
+    file_names = list(set([c["source"] for c in st.session_state.chunks]))
+
+    selected_file = st.selectbox(
+        "📄 Select document (optional)",
+        ["All Documents"] + file_names
+    )
+else:
+    selected_file = "All Documents"
 
 # ------------------ RETRIEVAL ------------------
 
-def retrieve(query, chunks):
-    scored = []
+def cosine_sim(a, b):
+    dot = sum(x*y for x, y in zip(a, b))
+    norm_a = math.sqrt(sum(x*x for x in a))
+    norm_b = math.sqrt(sum(x*x for x in b))
+    return dot / (norm_a * norm_b + 1e-8)
 
-    for chunk in chunks:
-        score = sum(1 for w in query.lower().split() if w in chunk["text"].lower())
-        scored.append((score, chunk))
+def retrieve(query, chunks):
+    if not chunks:
+        return []
+
+    query_emb = embed_texts([query])[0]
+
+    scored = []
+    for c in chunks:
+        sim = cosine_sim(query_emb, c["embedding"])
+        scored.append((sim, c))
+
+    if not scored:
+        return []
 
     scored.sort(reverse=True, key=lambda x: x[0])
+
+    if scored[0][0] < 0.25:
+        return []
+
     return [c for _, c in scored[:3]]
 
 # ------------------ PROMPT ------------------
@@ -110,8 +197,8 @@ def build_prompt(question, chunks):
     return f"""
 You are Nova, an AI assistant.
 
-Answer ONLY from the context below.
-If not found, say: "No information available."
+Use the context below to answer the question.
+Be flexible in understanding meaning.
 
 Context:
 {context}
@@ -131,26 +218,34 @@ def ask_gemini(prompt):
     )
     return response.text
 
+
+# ------------------ HIGHLIGHT ------------------
+
+def highlight_text(text, query):
+    words = query.lower().split()
+    highlighted = text
+
+    for w in words:
+        if len(w) > 2:
+            highlighted = highlighted.replace(
+                w,
+                f"<span style='background:#444;padding:2px 4px;border-radius:4px'>{w}</span>"
+            )
+            highlighted = highlighted.replace(
+                w.capitalize(),
+                f"<span style='background:#444;padding:2px 4px;border-radius:4px'>{w.capitalize()}</span>"
+            )
+    return highlighted
+
 # ------------------ CHAT DISPLAY ------------------
 
 for msg in st.session_state.messages:
 
     if msg["role"] == "user":
         col1, col2 = st.columns([1, 2])
-
         with col2:
             st.markdown(f"""
-            <div style='
-                background:#2f855a;
-                color:white;
-                padding:12px;
-                border-radius:12px;
-                margin:8px 0;
-                width:fit-content;
-                margin-left:auto;
-                max-width:60%;
-                text-align:right;
-            '>
+            <div style='background:#2f855a;color:white;padding:12px;border-radius:12px;margin:8px 0;margin-left:auto;max-width:60%;'>
             {msg['content']} 🧑
             </div>
             """, unsafe_allow_html=True)
@@ -160,35 +255,26 @@ for msg in st.session_state.messages:
         sources = msg["content"]["sources"]
 
         st.markdown(f"""
-        <div style='
-            background:#1e1e1e;
-            color:white;
-            padding:16px;
-            border-radius:14px;
-            margin:10px 0;
-            width:100%;
-        '>
+        <div style='background:#1e1e1e;color:white;padding:16px;border-radius:14px;margin:10px 0;'>
         🤖 {answer}
         </div>
         """, unsafe_allow_html=True)
 
-        st.markdown("---")
-        st.markdown("### 📚 Sources")
+        if sources:
+            st.markdown("### 📚 Sources")
 
-        for s in sources:
-            st.markdown(f"""
-            <div style='
-                background:#111;
-                padding:10px;
-                border-radius:10px;
-                margin-bottom:8px;
-                font-size:13px;
-                color:#ccc;
-            '>
-            📄 <b>{s['source']}</b><br>
-            {s['text'][:200]}...
-            </div>
-            """, unsafe_allow_html=True)
+            for s in sources:
+                highlighted = highlight_text(
+                    s["text"][:200],
+                    st.session_state.last_query
+                )
+
+                st.markdown(f"""
+                <div style='background:#111;padding:10px;border-radius:10px;margin-bottom:8px;font-size:13px;color:#ccc;'>
+                📄 <b>{s['source']}</b><br>
+                {highlighted}...
+                </div>
+                """, unsafe_allow_html=True)
 
 # ------------------ INPUT BAR ------------------
 
@@ -212,25 +298,33 @@ with col3:
 # ------------------ PROCESS ------------------
 
 if user_input:
-    if not st.session_state.chunks:
-        st.warning("⚠️ Upload document first")
-    else:
-        st.session_state.messages.append({
-            "role": "user",
-            "content": user_input
-        })
+    st.session_state.last_query = user_input
 
-        with st.spinner("Nova is thinking..."):
-            relevant = retrieve(user_input, st.session_state.chunks)
+    if selected_file != "All Documents":
+        filtered_chunks = [c for c in st.session_state.chunks if c["source"] == selected_file]
+    else:
+        filtered_chunks = st.session_state.chunks
+
+    st.session_state.messages.append({
+        "role": "user",
+        "content": user_input
+    })
+
+    with st.spinner("Nova is thinking..."):
+        relevant = retrieve(user_input, filtered_chunks)
+
+        if not relevant:
+            answer = "No information available."
+        else:
             prompt = build_prompt(user_input, relevant)
             answer = ask_gemini(prompt)
 
-        st.session_state.messages.append({
-            "role": "assistant",
-            "content": {
-                "answer": answer,
-                "sources": relevant
-            }
-        })
+    st.session_state.messages.append({
+        "role": "assistant",
+        "content": {
+            "answer": answer,
+            "sources": relevant
+        }
+    })
 
-        st.rerun()
+    st.rerun()
